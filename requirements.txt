@@ -1,6 +1,6 @@
 # ⚠ УЯЗВИМЫЕ ЗАВИСИМОСТИ
 Django==2.2.0
 requests==2.18.0
-PyYAML==5.1
+PyYAML==6.0.3
 Jinja2==2.10
 Pillow==5.4.1
