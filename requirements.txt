@@ -1,5 +1,5 @@
 # ⚠ УЯЗВИМЫЕ ЗАВИСИМОСТИ
-Django==2.2.0
+Django==6.1.1
 requests==2.18.0
 PyYAML==5.1
 Jinja2==2.10
