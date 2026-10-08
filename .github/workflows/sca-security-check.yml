@@ -1,0 +1,102 @@
+name: SCA Security Check
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 3 * * *'   # Ежедневно в 3:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write   # Для загрузки SARIF во вкладку Security
+
+jobs:
+  sca-scan:
+    name: SCA Scanning (Dependency-Check)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Cache NVD database
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: ${{ runner.os }}-nvd-${{ github.run_id }}
+          restore-keys: |
+            ${{ runner.os }}-nvd-
+
+      - name: Run OWASP Dependency-Check
+        id: sca
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          mvn -B org.owasp:dependency-check-maven:13.0.0:check \
+            -Dformats=HTML,JSON,SARIF \
+            -DfailBuildOnCVSS=7 \
+            -DnvdApiKeyEnvironmentVariable=NVD_API_KEY \
+            -DsuppressionFile=dependency-check-suppression.xml
+        continue-on-error: true
+
+      - name: Parse and Display Results
+        if: always()
+        run: |
+          R=target/dependency-check-report.json
+          if [ -f "$R" ]; then
+            echo "Всего уязвимостей: $(jq '[.dependencies[].vulnerabilities[]?] | length' $R)"
+            echo "Критические (CVSS >= 9.0):"
+            jq -r '.dependencies[] | .fileName as $f | .vulnerabilities[]?
+              | (.cvssv3.baseScore // .cvssv4.baseScore // .cvssv2.score // 0) as $s
+              | select($s >= 9) | "⚠ \(.name) [CVSS: \($s)] in \($f)"' $R
+          else
+            echo "Отчёт не создан — проверьте лог шага Dependency-Check"
+          fi
+
+      - name: Upload SARIF report
+        if: always() && hashFiles('target/dependency-check-report.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: target/dependency-check-report.sarif
+          category: dependency-check
+
+      - name: Upload HTML/JSON report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sca-report
+          path: |
+            target/dependency-check-report.html
+            target/dependency-check-report.json
+
+      - name: Create SBOM (CycloneDX)
+        if: always()
+        run: |
+          pip install cyclonedx-bom
+          cyclonedx-py requirements requirements.txt -o sbom-python.json
+          mvn -B org.cyclonedx:cyclonedx-maven-plugin:makeAggregateBom -DoutputFormat=json
+
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            sbom-python.json
+            target/bom.json
+
+      - name: Fail if Critical Vulnerabilities Found (Quality Gate)
+        if: steps.sca.outcome == 'failure'
+        run: |
+          echo "❌ Найдены уязвимости с CVSS >= 7.0! Отчёт — в артефактах сборки."
+          exit 1
+
